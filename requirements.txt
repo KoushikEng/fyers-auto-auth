@@ -1,0 +1,5 @@
+tenacity
+fyers_apiv3
+cryptography
+python-dotenv
+aiohttp

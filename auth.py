@@ -265,13 +265,17 @@ if __name__ == '__main__':
     secret_key = os.getenv('SECRET_KEY')
     pin = os.getenv('PIN')
     username = os.getenv('USERNAME')
-    with open("fernet_key.key", "rb") as f:
-        ENCRYPTION_KEY = f.read()
+    try:
+        with open("fernet_key.key", "rb") as f:
+            ENCRYPTION_KEY = f.read()
+    except FileNotFoundError:
+        print("No encryption key found. Generate a new one using 'python generate_fernet_key.py'")
+        raise SystemExit(1)
     
     t1 = time.time()
     fyersToken = FyersToken(totp_key, client_id, secret_key, pin, username, ENCRYPTION_KEY)
     print(fyersToken())
     t2 = time.time()
 
-    print(f"Execution time 1: {t2-t1:.2f}s")
+    print(f"Execution time: {t2-t1:.2f}s")
 
