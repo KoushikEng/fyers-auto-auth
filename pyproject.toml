@@ -45,3 +45,6 @@ fyers-auto-auth = "fyers_auto_auth.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["fyers_auto_auth*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
