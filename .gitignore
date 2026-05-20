@@ -3,3 +3,7 @@
 *.key
 __pycache__
 *.json
+dist/
+build/
+*.egg-info/
+.eggs/

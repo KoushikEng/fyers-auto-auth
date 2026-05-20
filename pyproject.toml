@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fyers-auto-auth"
+version = "0.1.0"
+description = "Automated Fyers broker access token generation with encrypted storage"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [
+    { name = "Koushik" }
+]
+keywords = ["fyers", "trading", "authentication", "broker", "api", "totp", "automated"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "fyers-apiv3",
+    "cryptography",
+    "aiohttp",
+    "tenacity",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/KoushikEng/fyers-auto-auth"
+Repository = "https://github.com/KoushikEng/fyers-auto-auth"
+Issues = "https://github.com/KoushikEng/fyers-auto-auth/issues"
+
+[project.scripts]
+fyers-auto-auth = "fyers_auto_auth.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fyers_auto_auth*"]
