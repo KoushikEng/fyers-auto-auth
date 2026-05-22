@@ -28,11 +28,12 @@ from urllib.parse import parse_qs, urlparse
 import aiohttp
 from cryptography.fernet import Fernet
 from fyers_apiv3.fyersModel import SessionModel
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_random
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_random, RetryCallState
 
 __all__ = ["FyersAuth"]
 
 logger = logging.getLogger("fyers_auto_auth")
+logger.setLevel(logging.DEBUG)
 
 # ── Fyers API endpoints ────────────────────────────────────────────────
 _BASE_URL = "https://api-t2.fyers.in/vagator/v2"
@@ -49,6 +50,18 @@ DEFAULT_REDIRECT_URI = (
 DEFAULT_TOKEN_DIR = Path.home() / ".fyers_auto_auth"
 DEFAULT_TOKEN_FILE = DEFAULT_TOKEN_DIR / "tokens.json"
 
+# ── Tenacity Callbacks ─────────────────────────────────────────────────
+def _retry_error_callback(retry_state: RetryCallState):
+    """Callback executed when a retry error occurs."""
+    logger.error(
+        f"Error in attempt {retry_state.attempt_number}: {retry_state.outcome.exception()}"
+    )
+
+def _before_sleep_callback(retry_state: RetryCallState):
+    """Callback executed before sleeping."""
+    logger.warning(
+        f"Retrying in {retry_state.next_action.sleep} seconds..."
+    )
 
 class FyersAuth:
     """Automated Fyers access-token manager.
@@ -185,7 +198,7 @@ class FyersAuth:
 
     async def __verify_otp(self, session, request_key, totp):
         """Step 2: Verify OTP using TOTP."""
-        data = f'{{"request_key":"{await request_key}","otp":{totp}}}'
+        data = f'{{"request_key":"{request_key}","otp":{totp}}}'
         async with session.post(_VERIFY_OTP_URL, data=data) as response:
             if response.status != 200:
                 raise Exception(
@@ -196,7 +209,7 @@ class FyersAuth:
     async def __verify_pin(self, session, request_key):
         """Step 3: Verify PIN."""
         data = (
-            f'{{"request_key":"{await request_key}",'
+            f'{{"request_key":"{request_key}",'
             f'"identity_type":"pin","identifier":"{self.__pin_encoded}"}}'
         )
         async with session.post(_VERIFY_PIN_URL, data=data) as response:
@@ -216,7 +229,7 @@ class FyersAuth:
             f'"scope":"","nonce":"","response_type":"code","create_cookie":true}}'
         )
         headers = {
-            "authorization": f"Bearer {await bearer_token}",
+            "authorization": f"Bearer {bearer_token}",
             "content-type": "application/json; charset=UTF-8",
         }
         async with session.post(
@@ -238,7 +251,7 @@ class FyersAuth:
             response_type="code",
             grant_type="authorization_code",
         )
-        session.set_token(await auth_code)
+        session.set_token(auth_code)
         response = session.generate_token()
 
         if response.get("s") != "ok":
@@ -249,17 +262,28 @@ class FyersAuth:
             "date": datetime.datetime.now().strftime("%Y-%m-%d"),
         }
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_random(min=2, max=3),
+        retry=retry_if_exception_type(Exception),
+        retry_error_callback=_retry_error_callback,
+        before_sleep=_before_sleep_callback,
+        reraise=True,
+    )
     async def __get_all_tokens(self):
-        """Run the full async login pipeline and return token dict."""
+        """Run the full async login pipeline and return token dict.
+
+        Each step is awaited sequentially so that the TOTP is computed
+        *after* step 1 completes, eliminating the 30-second boundary
+        race that previously caused "invalid request" errors.
+        """
         async with aiohttp.ClientSession() as s:
-            request_key = self.__send_login_otp(s)
-            request_key = self.__verify_otp(
-                s, request_key, self.__totp(self.__totp_decoded_key)
-            )
-            bearer_token = self.__verify_pin(s, request_key)
-            auth_code = self.__get_auth_code(s, bearer_token)
-            tokens = self.__generate_tokens(auth_code)
-            return await tokens
+            request_key = await self.__send_login_otp(s)
+            totp = self.__totp(self.__totp_decoded_key)
+            request_key = await self.__verify_otp(s, request_key, totp)
+            bearer_token = await self.__verify_pin(s, request_key)
+            auth_code = await self.__get_auth_code(s, bearer_token)
+            return await self.__generate_tokens(auth_code)
 
     def __get_all_tokens_sync(self):
         """Synchronous wrapper around the async login pipeline."""
@@ -314,12 +338,6 @@ class FyersAuth:
 
     # ── Public API ─────────────────────────────────────────────────────
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_random(min=2, max=3),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
     def get_token(self):
         """Obtain a valid Fyers access token for today.
 
@@ -371,3 +389,21 @@ class FyersAuth:
     def __call__(self):
         """Shorthand: ``auth()`` is equivalent to ``auth.get_token()``."""
         return self.get_token()
+
+
+if __name__ == "__main__":
+    from fyers_auto_auth import load_fernet_key
+    from dotenv import load_dotenv
+    import os
+    
+    load_dotenv()
+    
+    fyers = FyersAuth(
+        client_id=os.getenv("CLIENT_ID"),
+        secret_key=os.getenv("SECRET_KEY"),
+        username=os.getenv("USERNAME"),
+        totp_key=os.getenv("TOTP_KEY"),
+        pin=os.getenv("PIN"),
+        encryption_key=load_fernet_key(),
+    )
+    print(fyers.get_token())
