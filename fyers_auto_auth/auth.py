@@ -12,7 +12,7 @@ Tokens are cached in memory and on disk (encrypted with Fernet).
 A new token is generated only when the cached one is stale (not from today).
 """
 
-from typing import Dict, Union
+from typing import Dict, Optional, Union
 import asyncio
 import base64
 import datetime
@@ -311,7 +311,7 @@ class FyersAuth:
             json.dump(encrypted_tokens, f, indent=2)
         logger.debug("Token saved to %s", self.__token_file)
 
-    def __load_token(self) -> Dict[str, str] | None:
+    def __load_token(self) -> Optional[Dict[str, str]]:
         """Load and decrypt token from disk.  Returns ``None`` on failure."""
         if not self.__token_file.exists():
             return None
