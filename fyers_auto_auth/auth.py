@@ -12,7 +12,7 @@ Tokens are cached in memory and on disk (encrypted with Fernet).
 A new token is generated only when the cached one is stale (not from today).
 """
 
-from typing import Dict
+from typing import Dict, Union
 import asyncio
 import base64
 import datetime
@@ -112,8 +112,8 @@ class FyersAuth:
         username: str,
         totp_key: str,
         pin: str,
-        encryption_key: str | bytes,
-        token_file: str | Path = None,
+        encryption_key: Union[str, bytes],
+        token_file: Union[str, Path, None] = None,
         redirect_uri: str = DEFAULT_REDIRECT_URI,
     ):
         self.__client_id = client_id
@@ -149,7 +149,7 @@ class FyersAuth:
     # ── Token file path resolution ─────────────────────────────────────
 
     @staticmethod
-    def __resolve_token_path(token_file: str | Path | None = None) -> Path:
+    def __resolve_token_path(token_file: Union[str, Path, None] = None) -> Path:
         """Resolve the token file path from argument / env / default."""
         if token_file is not None:
             return Path(token_file).expanduser().resolve()
