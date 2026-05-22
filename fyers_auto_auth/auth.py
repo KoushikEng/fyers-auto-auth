@@ -12,6 +12,7 @@ Tokens are cached in memory and on disk (encrypted with Fernet).
 A new token is generated only when the cached one is stale (not from today).
 """
 
+from typing import Dict
 import asyncio
 import base64
 import datetime
@@ -25,7 +26,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import aiohttp
+from aiohttp import ClientSession
 from cryptography.fernet import Fernet
 from fyers_apiv3.fyersModel import SessionModel
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_random, RetryCallState
@@ -71,12 +72,12 @@ class FyersAuth:
     triggers a fresh login flow automatically.
 
     Args:
-        client_id: Fyers API app client ID (e.g. ``"L9NY305RTW-100"``).
-        secret_key: Fyers API app secret key.
-        username: Fyers account user ID.
-        totp_key: Base-32 encoded TOTP secret key.
-        pin: Fyers account PIN (numeric string).
-        encryption_key: Fernet encryption key (``bytes`` or ``str``).
+        client_id (str): Fyers API app client ID (e.g. ``"L9NY305RTW-100"``).
+        secret_key (str): Fyers API app secret key.
+        username (str): Fyers account user ID.
+        totp_key (str): Base-32 encoded TOTP secret key.
+        pin (str): Fyers account PIN (numeric string).
+        encryption_key (str | bytes): Fernet encryption key (``bytes`` or ``str``).
         token_file: Path where the encrypted token is stored.
             Accepts ``str`` or ``Path``; ``~`` is expanded.
 
@@ -106,14 +107,14 @@ class FyersAuth:
 
     def __init__(
         self,
-        client_id,
-        secret_key,
-        username,
-        totp_key,
-        pin,
-        encryption_key,
-        token_file=None,
-        redirect_uri=DEFAULT_REDIRECT_URI,
+        client_id: str,
+        secret_key: str,
+        username: str,
+        totp_key: str,
+        pin: str,
+        encryption_key: str | bytes,
+        token_file: str | Path = None,
+        redirect_uri: str = DEFAULT_REDIRECT_URI,
     ):
         self.__client_id = client_id
         self.__secret_key = secret_key
@@ -148,7 +149,7 @@ class FyersAuth:
     # ── Token file path resolution ─────────────────────────────────────
 
     @staticmethod
-    def __resolve_token_path(token_file):
+    def __resolve_token_path(token_file: str | Path | None = None) -> Path:
         """Resolve the token file path from argument / env / default."""
         if token_file is not None:
             return Path(token_file).expanduser().resolve()
@@ -161,7 +162,7 @@ class FyersAuth:
 
     # ── TOTP generation ────────────────────────────────────────────────
 
-    def __totp(self, key, time_step=30, digits=6, digest="sha1"):
+    def __totp(self, key: bytes, time_step: int = 30, digits: int = 6, digest: str = "sha1") -> str:
         """Generate a TOTP token using the given key.
 
         Args:
@@ -178,15 +179,15 @@ class FyersAuth:
 
     # ── Encryption helpers ─────────────────────────────────────────────
 
-    def __encrypt_token(self, token):
+    def __encrypt_token(self, token: str) -> str:
         return self.__cipher_suite.encrypt(token.encode()).decode()
 
-    def __decrypt_token(self, encrypted_token):
+    def __decrypt_token(self, encrypted_token: str) -> str:
         return self.__cipher_suite.decrypt(encrypted_token.encode()).decode()
 
     # ── Fyers login flow (async) ───────────────────────────────────────
 
-    async def __send_login_otp(self, session):
+    async def __send_login_otp(self, session: ClientSession) -> str:
         """Step 1: Request login OTP."""
         data = f'{{"fy_id":"{self.__username_encoded}","app_id":"2"}}'
         async with session.post(_LOGIN_URL, data=data) as response:
@@ -196,7 +197,7 @@ class FyersAuth:
                 )
             return (await response.json())["request_key"]
 
-    async def __verify_otp(self, session, request_key, totp):
+    async def __verify_otp(self, session: ClientSession, request_key: str, totp: str) -> str:
         """Step 2: Verify OTP using TOTP."""
         data = f'{{"request_key":"{request_key}","otp":{totp}}}'
         async with session.post(_VERIFY_OTP_URL, data=data) as response:
@@ -206,7 +207,7 @@ class FyersAuth:
                 )
             return (await response.json())["request_key"]
 
-    async def __verify_pin(self, session, request_key):
+    async def __verify_pin(self, session: ClientSession, request_key: str) -> str:
         """Step 3: Verify PIN."""
         data = (
             f'{{"request_key":"{request_key}",'
@@ -219,13 +220,13 @@ class FyersAuth:
                 )
             return (await response.json())["data"]["access_token"]
 
-    async def __get_auth_code(self, session, bearer_token):
+    async def __get_auth_code(self, session: ClientSession, bearer_token: str) -> str:
         """Step 4: Generate authorization code."""
         data = (
             f'{{"fyers_id":"{self.__username}",'
             f'"app_id":"{self.__client_id[:-4]}",'
             f'"redirect_uri":"{self.__redirect_uri}",'
-            f'"appType":"100","code_challenge":"","state":"abcdefg",'
+            f'"appType":"{self.__client_id[-3:]}","code_challenge":"","state":"abcdefg",'
             f'"scope":"","nonce":"","response_type":"code","create_cookie":true}}'
         )
         headers = {
@@ -242,7 +243,7 @@ class FyersAuth:
             parsed = urlparse((await response.json())["Url"])
             return parse_qs(parsed.query)["auth_code"][0]
 
-    async def __generate_tokens(self, auth_code):
+    async def __generate_tokens(self, auth_code: str) -> Dict[str, str]:
         """Step 5: Exchange authorization code for access token."""
         session = SessionModel(
             client_id=self.__client_id,
@@ -270,14 +271,14 @@ class FyersAuth:
         before_sleep=_before_sleep_callback,
         reraise=True,
     )
-    async def __get_all_tokens(self):
+    async def __get_all_tokens(self) -> Dict[str, str]:
         """Run the full async login pipeline and return token dict.
 
         Each step is awaited sequentially so that the TOTP is computed
         *after* step 1 completes, eliminating the 30-second boundary
         race that previously caused "invalid request" errors.
         """
-        async with aiohttp.ClientSession() as s:
+        async with ClientSession() as s:
             request_key = await self.__send_login_otp(s)
             totp = self.__totp(self.__totp_decoded_key)
             request_key = await self.__verify_otp(s, request_key, totp)
@@ -285,20 +286,20 @@ class FyersAuth:
             auth_code = await self.__get_auth_code(s, bearer_token)
             return await self.__generate_tokens(auth_code)
 
-    def __get_all_tokens_sync(self):
+    def __get_all_tokens_sync(self) -> Dict[str, str]:
         """Synchronous wrapper around the async login pipeline."""
         return asyncio.run(self.__get_all_tokens())
 
     # ── Hashing ────────────────────────────────────────────────────────
 
-    def __generate_app_id_hash(self):
+    def __generate_app_id_hash(self) -> str:
         """Generate the SHA-256 hash of client_id:secret_key."""
         combined = f"{self.__client_id}:{self.__secret_key}"
         return hashlib.sha256(combined.encode()).hexdigest()
 
     # ── Token persistence ──────────────────────────────────────────────
 
-    def __save_token(self, tokens):
+    def __save_token(self, tokens: Dict[str, str]) -> None:
         """Save encrypted token and generation date to disk."""
         encrypted_tokens = {
             "access_token": self.__encrypt_token(tokens["access_token"]),
@@ -310,7 +311,7 @@ class FyersAuth:
             json.dump(encrypted_tokens, f, indent=2)
         logger.debug("Token saved to %s", self.__token_file)
 
-    def __load_token(self):
+    def __load_token(self) -> Dict[str, str] | None:
         """Load and decrypt token from disk.  Returns ``None`` on failure."""
         if not self.__token_file.exists():
             return None
@@ -338,7 +339,7 @@ class FyersAuth:
 
     # ── Public API ─────────────────────────────────────────────────────
 
-    def get_token(self):
+    def get_token(self) -> str:
         """Obtain a valid Fyers access token for today.
 
         The method checks (in order):
@@ -352,7 +353,7 @@ class FyersAuth:
         cached one is from a previous day.
 
         Returns:
-            str: The Fyers access token (e.g. ``"L9NY305RTW-100:eyJ..."``).
+            str: The Fyers access token (e.g. ``"eyJ..."``).
 
         Raises:
             Exception: If the login flow fails after 3 retries.
@@ -386,7 +387,7 @@ class FyersAuth:
 
         return self.__token
 
-    def __call__(self):
+    def __call__(self) -> str:
         """Shorthand: ``auth()`` is equivalent to ``auth.get_token()``."""
         return self.get_token()
 
