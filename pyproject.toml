@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fyers-auto-auth"
-version = "0.1.5"
+version = "0.1.6"
 description = "Automated Fyers broker access token generation with encrypted storage"
 readme = "README.md"
 license = "MIT"

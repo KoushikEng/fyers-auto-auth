@@ -52,12 +52,6 @@ DEFAULT_TOKEN_DIR = Path.home() / ".fyers_auto_auth"
 DEFAULT_TOKEN_FILE = DEFAULT_TOKEN_DIR / "tokens.json"
 
 # ── Tenacity Callbacks ─────────────────────────────────────────────────
-def _retry_error_callback(retry_state: RetryCallState):
-    """Callback executed when a retry error occurs."""
-    logger.error(
-        f"Error in attempt {retry_state.attempt_number}: {retry_state.outcome.exception()}"
-    )
-
 def _before_sleep_callback(retry_state: RetryCallState):
     """Callback executed before sleeping."""
     logger.warning(
@@ -165,12 +159,29 @@ class FyersAuth:
     def __totp(self, key: bytes, time_step: int = 30, digits: int = 6, digest: str = "sha1") -> str:
         """Generate a TOTP token using the given key.
 
+        If fewer than ``_TOTP_MIN_REMAINING`` seconds remain in the
+        current time-step window, this method sleeps until the next
+        window to avoid the code expiring before the server validates it.
+
         Args:
             key (bytes): The decoded TOTP secret.
             time_step (int): Time step in seconds.
             digits (int): Number of output digits.
             digest (str): HMAC digest algorithm.
         """
+        # Guard against 30-second boundary race: if the current TOTP
+        # code is about to expire, wait for the next window.
+        _TOTP_MIN_REMAINING = 5  # seconds
+        now = time.time()
+        remaining = time_step - (now % time_step)
+        if remaining < _TOTP_MIN_REMAINING:
+            logger.debug(
+                "TOTP window expires in %.1fs – waiting %.1fs for next window.",
+                remaining,
+                remaining,
+            )
+            time.sleep(remaining + 0.1)  # small buffer
+
         counter = struct.pack(">Q", int(time.time() / time_step))
         mac = hmac.new(key, counter, digest).digest()
         offset = mac[-1] & 0x0F
@@ -189,8 +200,10 @@ class FyersAuth:
 
     async def __send_login_otp(self, session: ClientSession) -> str:
         """Step 1: Request login OTP."""
-        data = f'{{"fy_id":"{self.__username_encoded}","app_id":"2"}}'
-        async with session.post(_LOGIN_URL, data=data) as response:
+        payload = json.dumps(
+            {"fy_id": self.__username_encoded, "app_id": "2"}
+        )
+        async with session.post(_LOGIN_URL, data=payload) as response:
             if response.status != 200:
                 raise Exception(
                     f"Error in step 1 OTP request: {await response.text()}"
@@ -199,8 +212,10 @@ class FyersAuth:
 
     async def __verify_otp(self, session: ClientSession, request_key: str, totp: str) -> str:
         """Step 2: Verify OTP using TOTP."""
-        data = f'{{"request_key":"{request_key}","otp":{totp}}}'
-        async with session.post(_VERIFY_OTP_URL, data=data) as response:
+        payload = json.dumps(
+            {"request_key": request_key, "otp": totp}
+        )
+        async with session.post(_VERIFY_OTP_URL, data=payload) as response:
             if response.status != 200:
                 raise Exception(
                     f"Error in step 2 OTP verification: {await response.text()}"
@@ -209,11 +224,12 @@ class FyersAuth:
 
     async def __verify_pin(self, session: ClientSession, request_key: str) -> str:
         """Step 3: Verify PIN."""
-        data = (
-            f'{{"request_key":"{request_key}",'
-            f'"identity_type":"pin","identifier":"{self.__pin_encoded}"}}'
-        )
-        async with session.post(_VERIFY_PIN_URL, data=data) as response:
+        payload = json.dumps({
+            "request_key": request_key,
+            "identity_type": "pin",
+            "identifier": self.__pin_encoded,
+        })
+        async with session.post(_VERIFY_PIN_URL, data=payload) as response:
             if response.status != 200:
                 raise Exception(
                     f"Error in step 3 PIN verification: {await response.text()}"
@@ -222,19 +238,24 @@ class FyersAuth:
 
     async def __get_auth_code(self, session: ClientSession, bearer_token: str) -> str:
         """Step 4: Generate authorization code."""
-        data = (
-            f'{{"fyers_id":"{self.__username}",'
-            f'"app_id":"{self.__client_id[:-4]}",'
-            f'"redirect_uri":"{self.__redirect_uri}",'
-            f'"appType":"{self.__client_id[-3:]}","code_challenge":"","state":"abcdefg",'
-            f'"scope":"","nonce":"","response_type":"code","create_cookie":true}}'
-        )
+        payload = json.dumps({
+            "fyers_id": self.__username,
+            "app_id": self.__client_id[:-4],
+            "redirect_uri": self.__redirect_uri,
+            "appType": self.__client_id[-3:],
+            "code_challenge": "",
+            "state": "abcdefg",
+            "scope": "",
+            "nonce": "",
+            "response_type": "code",
+            "create_cookie": True,
+        })
         headers = {
             "authorization": f"Bearer {bearer_token}",
             "content-type": "application/json; charset=UTF-8",
         }
         async with session.post(
-            _AUTH_CODE_URL, headers=headers, data=data
+            _AUTH_CODE_URL, headers=headers, data=payload
         ) as response:
             if response.status != 308:
                 raise Exception(
@@ -267,7 +288,6 @@ class FyersAuth:
         stop=stop_after_attempt(3),
         wait=wait_random(min=2, max=3),
         retry=retry_if_exception_type(Exception),
-        retry_error_callback=_retry_error_callback,
         before_sleep=_before_sleep_callback,
         reraise=True,
     )
@@ -406,5 +426,6 @@ if __name__ == "__main__":
         totp_key=os.getenv("TOTP_KEY"),
         pin=os.getenv("PIN"),
         encryption_key=load_fernet_key(),
+        token_file="tokens.json"
     )
     print(fyers.get_token())
